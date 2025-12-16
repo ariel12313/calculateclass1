@@ -1,19 +1,34 @@
 import streamlit as st
+
+# Check and show startup message
 st.write("APP STARTED")
 
-import matplotlib.pyplot as plt
-st.write("MATPLOTLIB OK")
+# Try importing matplotlib with error handling
+try:
+    import matplotlib
+    matplotlib.use('Agg')  # Set backend before importing pyplot
+    import matplotlib.pyplot as plt
+    st.write("MATPLOTLIB OK")
+except ImportError as e:
+    st.error("❌ Matplotlib not installed. Please add 'matplotlib' to requirements.txt")
+    st.stop()
 
-import pandas as pd
-import numpy as np
-from scipy.stats import pearsonr, spearmanr, shapiro, linregress
+# Import other required libraries
+try:
+    import pandas as pd
+    import numpy as np
+    from scipy.stats import pearsonr, spearmanr, shapiro, linregress
+except ImportError as e:
+    st.error(f"❌ Missing required library: {str(e)}")
+    st.error("Please ensure requirements.txt contains: pandas, numpy, scipy, openpyxl")
+    st.stop()
 
 # =====================
 # Page Config (Light mode)
 # =====================
 st.set_page_config(page_title="Survey Data Analysis", layout="wide")
 
-# Optional: force light-ish look via CSS (tidy, not mandatory)
+# Optional: force light-ish look via CSS
 st.markdown(
     """
     <style>
@@ -124,7 +139,7 @@ def read_data(file):
         name = file.name.lower()
         if name.endswith(".csv"):
             return pd.read_csv(file)
-        return pd.read_excel(file)
+        return pd.read_excel(file, engine='openpyxl')
     except Exception as e:
         st.error(f"Error reading file: {str(e)}")
         return None
@@ -138,7 +153,7 @@ if uploaded_file:
     st.subheader(T["preview"])
     st.dataframe(df.head())
 
-    # --- Optional conversion tool (helps when numeric columns are read as text) ---
+    # --- Optional conversion tool ---
     st.caption(T["convert_hint"])
     convert_candidates = [c for c in df.columns if df[c].dtype == "object"]
     if convert_candidates:
@@ -149,7 +164,7 @@ if uploaded_file:
             st.success(T["convert_success"])
             st.dataframe(df.head())
 
-    # Detect numeric columns after conversion attempt
+    # Detect numeric columns
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
 
     if not numeric_cols:
@@ -177,9 +192,8 @@ if uploaded_file:
     # =====================
     st.subheader(T["select_x"])
     
-    # Ensure we have at least 2 numeric columns for correlation
     if len(numeric_cols) < 2:
-        st.warning("Need at least 2 numeric columns for correlation analysis." if lang == "en" else "Membutuhkan minimal 2 kolom numerik untuk analisis korelasi.")
+        st.warning("Need at least 2 numeric columns." if lang == "en" else "Membutuhkan minimal 2 kolom numerik.")
         st.stop()
     
     col_x = st.selectbox(T["select_x"], numeric_cols, index=0, key="select_x")
@@ -196,19 +210,16 @@ if uploaded_file:
             st.error(T["error_pairs"])
             st.stop()
 
-        # -------- Normality test (safe) --------
+        # -------- Normality test --------
         def safe_shapiro(x):
             """Safely perform Shapiro-Wilk test"""
             try:
                 x = np.asarray(x).flatten()
                 if len(x) < 3:
                     return np.nan
-                # Check for constant values
                 if np.std(x) == 0 or np.all(x == x[0]):
                     return np.nan
-                # Check for valid range
                 if len(x) > 5000:
-                    # Shapiro-Wilk can be unreliable for very large samples
                     return np.nan
                 stat, p = shapiro(x)
                 return float(p)
@@ -224,7 +235,7 @@ if uploaded_file:
         st.write(f"{T['px']}: {px_text}")
         st.write(f"{T['py']}: {py_text}")
 
-        # Rule: If both p-values available and > 0.05 -> Pearson; otherwise Spearman
+        # Choose correlation method
         use_pearson = (not np.isnan(p_x)) and (not np.isnan(p_y)) and (p_x > 0.05) and (p_y > 0.05)
 
         try:
@@ -261,19 +272,18 @@ if uploaded_file:
         c3.metric(T["pval"], f"{pval:.4f}")
 
         # =====================
-        # Visualization (stable regression line)
+        # Visualization
         # =====================
         st.subheader(T["scatter"])
 
         fig, ax = plt.subplots(figsize=(9, 5))
         ax.scatter(data[col_x], data[col_y], alpha=0.7, edgecolors='k', linewidth=0.5)
 
-        # Regression line safely with linregress
+        # Regression line
         try:
             x_vals = data[col_x].values
             y_vals = data[col_y].values
             
-            # Check for sufficient variance
             if np.std(x_vals) > 0:
                 lr = linregress(x_vals, y_vals)
                 x_line = np.linspace(x_vals.min(), x_vals.max(), 100)
@@ -281,7 +291,6 @@ if uploaded_file:
                 ax.plot(x_line, y_line, 'r--', linewidth=2, label=f'y = {lr.slope:.3f}x + {lr.intercept:.3f}')
                 ax.legend()
         except Exception:
-            # If regression fails, continue without line
             pass
 
         ax.set_xlabel(col_x, fontsize=12)
@@ -290,7 +299,7 @@ if uploaded_file:
         ax.grid(True, alpha=0.25)
         plt.tight_layout()
         st.pyplot(fig)
-        plt.close()
+        plt.close(fig)
 
         # =====================
         # Description
