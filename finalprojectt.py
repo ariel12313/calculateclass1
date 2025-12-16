@@ -59,6 +59,7 @@ LANG = {
         "moderate": "sedang",
         "strong": "kuat",
         "scatter": "Scatter Plot + Garis Regresi",
+        "convert_success": "Konversi diterapkan.",
     },
     "en": {
         "title": "📊 Survey Data Analysis App",
@@ -91,6 +92,7 @@ LANG = {
         "moderate": "moderate",
         "strong": "strong",
         "scatter": "Scatter Plot + Regression Line",
+        "convert_success": "Conversion applied.",
     }
 }
 
@@ -117,13 +119,21 @@ st.write(T["desc"])
 uploaded_file = st.file_uploader(T["upload"], type=["xlsx", "csv"])
 
 def read_data(file):
-    name = file.name.lower()
-    if name.endswith(".csv"):
-        return pd.read_csv(file)
-    return pd.read_excel(file)
+    """Safely read CSV or Excel file"""
+    try:
+        name = file.name.lower()
+        if name.endswith(".csv"):
+            return pd.read_csv(file)
+        return pd.read_excel(file)
+    except Exception as e:
+        st.error(f"Error reading file: {str(e)}")
+        return None
 
 if uploaded_file:
     df = read_data(uploaded_file)
+    
+    if df is None:
+        st.stop()
 
     st.subheader(T["preview"])
     st.dataframe(df.head())
@@ -133,14 +143,14 @@ if uploaded_file:
     convert_candidates = [c for c in df.columns if df[c].dtype == "object"]
     if convert_candidates:
         cols_to_convert = st.multiselect(T["convert_cols"], options=convert_candidates)
-        if st.button(T["apply_convert"]):
+        if st.button(T["apply_convert"]) and cols_to_convert:
             for c in cols_to_convert:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
-            st.success("Conversion applied." if lang == "en" else "Konversi diterapkan.")
+            st.success(T["convert_success"])
             st.dataframe(df.head())
 
     # Detect numeric columns after conversion attempt
-    numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
 
     if not numeric_cols:
         st.warning(T["warn_no_numeric"])
@@ -151,23 +161,32 @@ if uploaded_file:
     # =====================
     st.subheader(T["desc_stat"])
 
+    default_count = min(10, len(numeric_cols))
     desc_cols = st.multiselect(
         T["select_numeric"],
         options=numeric_cols,
-        default=numeric_cols[: min(10, len(numeric_cols))]
+        default=numeric_cols[:default_count]
     )
 
     if desc_cols:
-        st.dataframe(df[desc_cols].describe().T.round(4))
+        desc_stats = df[desc_cols].describe().T
+        st.dataframe(desc_stats.round(4))
 
     # =====================
     # Association Analysis
     # =====================
     st.subheader(T["select_x"])
-    col_x = st.selectbox(T["select_x"], numeric_cols, index=0)
-    col_y = st.selectbox(T["select_y"], numeric_cols, index=1 if len(numeric_cols) > 1 else 0)
+    
+    # Ensure we have at least 2 numeric columns for correlation
+    if len(numeric_cols) < 2:
+        st.warning("Need at least 2 numeric columns for correlation analysis." if lang == "en" else "Membutuhkan minimal 2 kolom numerik untuk analisis korelasi.")
+        st.stop()
+    
+    col_x = st.selectbox(T["select_x"], numeric_cols, index=0, key="select_x")
+    col_y = st.selectbox(T["select_y"], numeric_cols, index=1, key="select_y")
 
     if st.button(T["analyze"]):
+        # Prepare data
         data = df[[col_x, col_y]].copy()
         data[col_x] = pd.to_numeric(data[col_x], errors="coerce")
         data[col_y] = pd.to_numeric(data[col_y], errors="coerce")
@@ -178,15 +197,20 @@ if uploaded_file:
             st.stop()
 
         # -------- Normality test (safe) --------
-        # Shapiro can fail if data are constant; handle with try/except.
         def safe_shapiro(x):
-            x = np.asarray(x)
-            if len(x) < 3:
-                return np.nan
-            if np.all(x == x[0]):  # constant
-                return np.nan
+            """Safely perform Shapiro-Wilk test"""
             try:
-                _, p = shapiro(x)
+                x = np.asarray(x).flatten()
+                if len(x) < 3:
+                    return np.nan
+                # Check for constant values
+                if np.std(x) == 0 or np.all(x == x[0]):
+                    return np.nan
+                # Check for valid range
+                if len(x) > 5000:
+                    # Shapiro-Wilk can be unreliable for very large samples
+                    return np.nan
+                stat, p = shapiro(x)
                 return float(p)
             except Exception:
                 return np.nan
@@ -195,23 +219,28 @@ if uploaded_file:
         p_y = safe_shapiro(data[col_y])
 
         st.subheader(T["normality"])
-        st.write(f"{T['px']}: {('N/A' if np.isnan(p_x) else f'{p_x:.4f}')}")
-        st.write(f"{T['py']}: {('N/A' if np.isnan(p_y) else f'{p_y:.4f}')}")
+        px_text = "N/A" if np.isnan(p_x) else f"{p_x:.4f}"
+        py_text = "N/A" if np.isnan(p_y) else f"{p_y:.4f}"
+        st.write(f"{T['px']}: {px_text}")
+        st.write(f"{T['py']}: {py_text}")
 
-        # Rule:
-        # If both p-values available and > 0.05 -> Pearson; otherwise Spearman
+        # Rule: If both p-values available and > 0.05 -> Pearson; otherwise Spearman
         use_pearson = (not np.isnan(p_x)) and (not np.isnan(p_y)) and (p_x > 0.05) and (p_y > 0.05)
 
-        if use_pearson:
-            method = "Pearson"
-            corr, pval = pearsonr(data[col_x], data[col_y])
-        else:
-            method = "Spearman"
-            corr, pval = spearmanr(data[col_x], data[col_y])
+        try:
+            if use_pearson:
+                method = "Pearson"
+                corr, pval = pearsonr(data[col_x], data[col_y])
+            else:
+                method = "Spearman"
+                corr, pval = spearmanr(data[col_x], data[col_y])
+        except Exception as e:
+            st.error(f"Error calculating correlation: {str(e)}")
+            st.stop()
 
         direction = T["positive"] if corr > 0 else T["negative"]
 
-        # Strength interpretation (simple, common)
+        # Strength interpretation
         abs_r = abs(corr)
         if abs_r < 0.3:
             strength = T["very_weak"]
@@ -237,22 +266,31 @@ if uploaded_file:
         st.subheader(T["scatter"])
 
         fig, ax = plt.subplots(figsize=(9, 5))
-        ax.scatter(data[col_x], data[col_y], alpha=0.7)
+        ax.scatter(data[col_x], data[col_y], alpha=0.7, edgecolors='k', linewidth=0.5)
 
-        # Regression line safely with linregress (more stable than polyfit for many cases)
+        # Regression line safely with linregress
         try:
-            lr = linregress(data[col_x], data[col_y])
-            x_line = np.linspace(data[col_x].min(), data[col_x].max(), 100)
-            y_line = lr.intercept + lr.slope * x_line
-            ax.plot(x_line, y_line, linestyle="--")
+            x_vals = data[col_x].values
+            y_vals = data[col_y].values
+            
+            # Check for sufficient variance
+            if np.std(x_vals) > 0:
+                lr = linregress(x_vals, y_vals)
+                x_line = np.linspace(x_vals.min(), x_vals.max(), 100)
+                y_line = lr.intercept + lr.slope * x_line
+                ax.plot(x_line, y_line, 'r--', linewidth=2, label=f'y = {lr.slope:.3f}x + {lr.intercept:.3f}')
+                ax.legend()
         except Exception:
+            # If regression fails, continue without line
             pass
 
-        ax.set_xlabel(col_x)
-        ax.set_ylabel(col_y)
-        ax.set_title(f"{col_x} vs {col_y}")
+        ax.set_xlabel(col_x, fontsize=12)
+        ax.set_ylabel(col_y, fontsize=12)
+        ax.set_title(f"{col_x} vs {col_y}", fontsize=14, fontweight='bold')
         ax.grid(True, alpha=0.25)
+        plt.tight_layout()
         st.pyplot(fig)
+        plt.close()
 
         # =====================
         # Description
@@ -276,5 +314,4 @@ if uploaded_file:
             )
 
 else:
-
     st.info(T["info"])
