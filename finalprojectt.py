@@ -1,7 +1,11 @@
 import streamlit as st
+st.write("APP STARTED")
+
+import matplotlib.pyplot as plt
+st.write("MATPLOTLIB OK")
+
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from scipy.stats import pearsonr, spearmanr, shapiro, linregress
 
 # =====================
@@ -272,4 +276,5 @@ if uploaded_file:
             )
 
 else:
+
     st.info(T["info"])
